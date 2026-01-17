@@ -68,6 +68,7 @@ IMAGE_RESOLUTION = (224, 224)
 #     "tokenized_prompt_mask": bool[*b, l],  # Optional, mask for tokenized prompt
 #     "token_ar_mask": int32[*b, l],  # Optional, autoregressive mask for FAST model
 #     "token_loss_mask": bool[*b, l],  # Optional, loss mask for FAST model
+#     "depth": float32[*b, h, w],  # Optional, depth map
 #
 #      # Actions data.
 #      "actions": float32[*b ah ad]
@@ -106,6 +107,13 @@ class Observation(Generic[ArrayT]):
     # Token loss mask (for FAST autoregressive model).
     token_loss_mask: at.Bool[ArrayT, "*b l"] | None = None
 
+    # Depth map support fields.
+    # Depth map, single channel (H, W) or (B, H, W).
+    # Use distinct axis names to avoid coupling with image layout (HWC vs CHW).
+    depth: at.Float[ArrayT, "*b dh dw"] | None = None
+    # Depth mask, indicates if depth is valid.
+    depth_mask: at.Bool[ArrayT, "*b"] | None = None
+
     @classmethod
     def from_dict(cls, data: at.PyTree[ArrayT]) -> "Observation[ArrayT]":
         """This method defines the mapping between unstructured data (i.e., nested dict) to the structured Observation format."""
@@ -126,6 +134,8 @@ class Observation(Generic[ArrayT]):
             tokenized_prompt_mask=data.get("tokenized_prompt_mask"),
             token_ar_mask=data.get("token_ar_mask"),
             token_loss_mask=data.get("token_loss_mask"),
+            depth=data.get("depth"),
+            depth_mask=data.get("depth_mask"),
         )
 
     def to_dict(self) -> at.PyTree[ArrayT]:
@@ -197,6 +207,13 @@ def preprocess_observation(
         else:
             out_masks[key] = jnp.asarray(observation.image_masks[key])
 
+    # Process depth if available
+    out_depth = observation.depth
+    out_depth_mask = observation.depth_mask
+    if out_depth is not None and out_depth_mask is None:
+        # Default to no masking if depth is provided but mask is not
+        out_depth_mask = jnp.ones(batch_shape, dtype=jnp.bool)
+
     return Observation(
         images=out_images,
         image_masks=out_masks,
@@ -205,6 +222,8 @@ def preprocess_observation(
         tokenized_prompt_mask=observation.tokenized_prompt_mask,
         token_ar_mask=observation.token_ar_mask,
         token_loss_mask=observation.token_loss_mask,
+        depth=out_depth,
+        depth_mask=out_depth_mask,
     )
 
 

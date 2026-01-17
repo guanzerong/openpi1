@@ -141,8 +141,10 @@ def preprocess_observation_pytorch(
             # Back to [-1, 1]
             image = image * 2.0 - 1.0
 
-        # Convert back to [B, C, H, W] format if it was originally channels-first
+        # Return images in channels-first format for the model.
         if is_channels_first:
+            image = image.permute(0, 3, 1, 2)  # [B, H, W, C] -> [B, C, H, W]
+        else:
             image = image.permute(0, 3, 1, 2)  # [B, H, W, C] -> [B, C, H, W]
 
         out_images[key] = image
@@ -162,6 +164,11 @@ def preprocess_observation_pytorch(
             for key, value in kwargs.items():
                 setattr(self, key, value)
 
+    out_depth = getattr(observation, "depth", None)
+    out_depth_mask = getattr(observation, "depth_mask", None)
+    if out_depth is not None and out_depth_mask is None:
+        out_depth_mask = torch.ones(batch_shape, dtype=torch.bool, device=observation.state.device)
+
     return SimpleProcessedObservation(
         images=out_images,
         image_masks=out_masks,
@@ -170,4 +177,6 @@ def preprocess_observation_pytorch(
         tokenized_prompt_mask=observation.tokenized_prompt_mask,
         token_ar_mask=observation.token_ar_mask,
         token_loss_mask=observation.token_loss_mask,
+        depth=out_depth,
+        depth_mask=out_depth_mask,
     )

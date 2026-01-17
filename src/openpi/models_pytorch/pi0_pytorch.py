@@ -6,7 +6,10 @@ from torch import Tensor
 from torch import nn
 import torch.nn.functional as F  # noqa: N812
 
+from openpi.models.depth_projector import DepthProjectorConfig
 import openpi.models.gemma as _gemma
+from openpi.models_pytorch.dformer_depth_projector import DFormerDepthProjector
+from openpi.models_pytorch.depth_projector_pytorch import DepthProjectorPytorch
 from openpi.models_pytorch.gemma_pytorch import PaliGemmaWithExpertModel
 import openpi.models_pytorch.preprocessing_pytorch as _preprocessing
 
@@ -86,6 +89,7 @@ class PI0Pytorch(nn.Module):
         super().__init__()
         self.config = config
         self.pi05 = config.pi05
+        self.use_depth = getattr(config, "use_depth", False)
 
         paligemma_config = _gemma.get_config(config.paligemma_variant)
         action_expert_config = _gemma.get_config(config.action_expert_variant)
@@ -95,7 +99,21 @@ class PI0Pytorch(nn.Module):
             action_expert_config,
             use_adarms=[False, True] if self.pi05 else [False, False],
             precision=config.dtype,
+            paligemma_variant=getattr(config, "paligemma_variant", None),
+            action_expert_variant=getattr(config, "action_expert_variant", None),
         )
+
+        self.depth_projector = None
+        self.depth_proj = None
+        if self.use_depth:
+            self.depth_encoder = getattr(config, "depth_encoder", "pointnet")
+            if self.depth_encoder == "dformer":
+                self.depth_projector = DFormerDepthProjector(config, output_dim=paligemma_config.width)
+            else:
+                depth_config = getattr(config, "depth_config", DepthProjectorConfig())
+                self.depth_projector = DepthProjectorPytorch(depth_config)
+                if depth_config.output_dim != paligemma_config.width:
+                    self.depth_proj = nn.Linear(depth_config.output_dim, paligemma_config.width)
 
         self.action_in_proj = nn.Linear(32, action_expert_config.width)
         self.action_out_proj = nn.Linear(action_expert_config.width, 32)
@@ -167,6 +185,8 @@ class PI0Pytorch(nn.Module):
             observation.tokenized_prompt,
             observation.tokenized_prompt_mask,
             observation.state,
+            observation.depth,
+            observation.depth_mask,
         )
 
     def sample_noise(self, shape, device):
@@ -184,7 +204,7 @@ class PI0Pytorch(nn.Module):
         return time.to(dtype=torch.float32, device=device)
 
     def embed_prefix(
-        self, images, img_masks, lang_tokens, lang_masks
+        self, images, img_masks, lang_tokens, lang_masks, depth=None, depth_mask=None
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Embed images with SigLIP and language tokens with embedding layer to prepare
         for PaliGemma transformer processing.
@@ -208,6 +228,35 @@ class PI0Pytorch(nn.Module):
 
             # Create attention masks so that image tokens attend to each other
             att_masks += [0] * num_img_embs
+
+        # Process depth map (single token) if enabled
+        if self.use_depth and depth is not None:
+            if not torch.is_floating_point(depth):
+                depth = depth.to(torch.float32)
+
+            if self.depth_encoder == "dformer":
+                if not images:
+                    raise ValueError("DFormer depth encoder requires at least one RGB image input.")
+                depth_tokens = self.depth_projector(images[0], depth)
+            else:
+                depth_tokens = self.depth_projector(depth)
+                if self.depth_proj is not None:
+                    depth_tokens = self.depth_proj(depth_tokens)
+
+            if embs:
+                depth_tokens = depth_tokens.to(dtype=embs[0].dtype)
+
+            depth_tokens = depth_tokens[:, None, :]
+            embs.append(depth_tokens)
+
+            bsize = depth_tokens.shape[0]
+            if depth_mask is None:
+                depth_mask = torch.ones(bsize, dtype=torch.bool, device=depth_tokens.device)
+            else:
+                depth_mask = depth_mask.to(device=depth_tokens.device, dtype=torch.bool)
+
+            pad_masks.append(depth_mask[:, None])
+            att_masks += [0]
 
         # Process language tokens
         def lang_embed_func(lang_tokens):
@@ -315,7 +364,9 @@ class PI0Pytorch(nn.Module):
 
     def forward(self, observation, actions, noise=None, time=None) -> Tensor:
         """Do a full training forward pass and compute the loss (batch_size x num_steps x num_motors)"""
-        images, img_masks, lang_tokens, lang_masks, state = self._preprocess_observation(observation, train=True)
+        images, img_masks, lang_tokens, lang_masks, state, depth, depth_mask = self._preprocess_observation(
+            observation, train=True
+        )
 
         if noise is None:
             noise = self.sample_noise(actions.shape, actions.device)
@@ -327,7 +378,9 @@ class PI0Pytorch(nn.Module):
         x_t = time_expanded * noise + (1 - time_expanded) * actions
         u_t = noise - actions
 
-        prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(images, img_masks, lang_tokens, lang_masks)
+        prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(
+            images, img_masks, lang_tokens, lang_masks, depth, depth_mask
+        )
         suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self.embed_suffix(state, x_t, time)
         if (
             self.paligemma_with_expert.paligemma.language_model.layers[0].self_attn.q_proj.weight.dtype
@@ -380,9 +433,13 @@ class PI0Pytorch(nn.Module):
             actions_shape = (bsize, self.config.action_horizon, self.config.action_dim)
             noise = self.sample_noise(actions_shape, device)
 
-        images, img_masks, lang_tokens, lang_masks, state = self._preprocess_observation(observation, train=False)
+        images, img_masks, lang_tokens, lang_masks, state, depth, depth_mask = self._preprocess_observation(
+            observation, train=False
+        )
 
-        prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(images, img_masks, lang_tokens, lang_masks)
+        prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(
+            images, img_masks, lang_tokens, lang_masks, depth, depth_mask
+        )
         prefix_att_2d_masks = make_att_2d_masks(prefix_pad_masks, prefix_att_masks)
         prefix_position_ids = torch.cumsum(prefix_pad_masks, dim=1) - 1
 

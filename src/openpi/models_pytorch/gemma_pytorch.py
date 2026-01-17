@@ -16,6 +16,8 @@ class PaliGemmaWithExpertModel(nn.Module):
         action_expert_config,
         use_adarms=None,
         precision: Literal["bfloat16", "float32"] = "bfloat16",
+        paligemma_variant: str | None = None,
+        action_expert_variant: str | None = None,
     ):
         if use_adarms is None:
             use_adarms = [False, False]
@@ -57,6 +59,8 @@ class PaliGemmaWithExpertModel(nn.Module):
         self.paligemma = PaliGemmaForConditionalGeneration(config=vlm_config_hf)
         self.gemma_expert = GemmaForCausalLM(config=action_expert_config_hf)
         self.gemma_expert.model.embed_tokens = None
+        _ = paligemma_variant
+        _ = action_expert_variant
 
         self.to_bfloat16_for_selected_params(precision)
 

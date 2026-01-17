@@ -523,8 +523,7 @@ class TrainConfig:
     resume: bool = False
 
     # If true, will enable wandb logging.
-    wandb_enabled: bool = True
-
+    wandb_enabled: bool = False
     # Used to pass metadata to the policy server.
     policy_metadata: dict[str, Any] | None = None
 
@@ -987,3 +986,13 @@ def get_config(config_name: str) -> TrainConfig:
         raise ValueError(f"Config '{config_name}' not found.{closest_str}")
 
     return _CONFIGS_DICT[config_name]
+
+# Late import to avoid circular dependency
+def _register_libero_depth_configs():
+    """Register libero depth configs after main config module is loaded."""
+    from openpi.training import libero_depth_config
+    for config in libero_depth_config.LIBERO_DEPTH_CONFIGS:
+        if config.name not in _CONFIGS_DICT:
+            _CONFIGS_DICT[config.name] = config
+
+_register_libero_depth_configs()

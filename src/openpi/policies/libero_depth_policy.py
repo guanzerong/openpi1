@@ -1,0 +1,158 @@
+"""Libero policy transforms with depth support.
+
+This module extends the Libero policy to support depth map inputs,
+following the data format from modified_libero_rlds_cotdep dataset.
+"""
+import dataclasses
+
+import einops
+import numpy as np
+
+from openpi import transforms
+from openpi.models import model as _model
+
+
+def make_libero_depth_example() -> dict:
+    """Creates a random input example for the Libero policy with depth."""
+    return {
+        "observation/state": np.random.rand(8),
+        "observation/image": np.random.randint(256, size=(224, 224, 3), dtype=np.uint8),
+        "observation/wrist_image": np.random.randint(256, size=(224, 224, 3), dtype=np.uint8),
+        "observation/depth": np.random.rand(224, 224).astype(np.float32),  # Depth map
+        "prompt": "do something",
+    }
+
+
+def _parse_image(image) -> np.ndarray:
+    """Parse image to uint8 (H, W, C) format."""
+    image = np.asarray(image)
+    if np.issubdtype(image.dtype, np.floating):
+        image = (255 * image).astype(np.uint8)
+    if image.shape[0] == 3:
+        image = einops.rearrange(image, "c h w -> h w c")
+    return image
+
+
+def _parse_depth(depth, normalize: bool = False, target_size: tuple[int, int] | None = None) -> np.ndarray:
+    """Parse depth map.
+    
+    Args:
+        depth: Depth map array, can be (H, W) or (H, W, 1)
+        normalize: Whether to normalize depth values
+        target_size: Optional (height, width) to resize to
+        
+    Returns:
+        Depth map as float32 (H, W)
+    """
+    depth = np.asarray(depth, dtype=np.float32)
+    
+    # Squeeze extra dimensions
+    if depth.ndim == 3 and depth.shape[-1] == 1:
+        depth = depth.squeeze(-1)
+    
+    # Resize if target size specified
+    if target_size is not None and depth.shape[:2] != target_size:
+        # Use PIL for resize
+        from PIL import Image
+        depth_img = Image.fromarray(depth)
+        depth_img = depth_img.resize((target_size[1], target_size[0]), Image.BILINEAR)
+        depth = np.array(depth_img, dtype=np.float32)
+    
+    if normalize:
+        # Optional per-frame normalization (disabled by default to match 3dcavla behavior).
+        depth_min = np.min(depth)
+        depth_max = np.max(depth)
+        if depth_max > depth_min:
+            depth = (depth - depth_min) / (depth_max - depth_min)
+        else:
+            depth = np.zeros_like(depth)
+    
+    return depth
+
+
+@dataclasses.dataclass(frozen=True)
+class LiberoDepthInputs(transforms.DataTransformFn):
+    """Transform inputs with depth support for Libero.
+    
+    This class extends LiberoInputs to additionally handle depth map inputs.
+    The depth map from the third-person view camera is processed and added
+    to the model inputs.
+    """
+    
+    # Determines which model will be used
+    model_type: _model.ModelType
+    # Whether to normalize depth values to [0, 1] (disabled by default to match 3dcavla).
+    normalize_depth: bool = False
+
+    def __call__(self, data: dict) -> dict:
+        # Parse RGB images
+        base_image = _parse_image(data["observation/image"])
+        wrist_image = _parse_image(data["observation/wrist_image"])
+
+        # Create base inputs dict
+        inputs = {
+            "state": data["observation/state"],
+            "image": {
+                "base_0_rgb": base_image,
+                "left_wrist_0_rgb": wrist_image,
+                # Pad non-existent right wrist image with zeros
+                "right_wrist_0_rgb": np.zeros_like(base_image),
+            },
+            "image_mask": {
+                "base_0_rgb": np.True_,
+                "left_wrist_0_rgb": np.True_,
+                "right_wrist_0_rgb": np.True_ if self.model_type == _model.ModelType.PI0_FAST else np.False_,
+            },
+        }
+        
+        # Parse and add depth map if available
+        if "observation/depth" in data:
+            depth = _parse_depth(data["observation/depth"], normalize=self.normalize_depth, target_size=(224, 224))
+            inputs["depth"] = depth
+            inputs["depth_mask"] = np.True_
+        else:
+            # No depth available - create placeholder
+            inputs["depth"] = None
+            inputs["depth_mask"] = np.False_
+
+        # Add actions if available (training only)
+        if "actions" in data:
+            inputs["actions"] = data["actions"]
+
+        # Add prompt
+        if "prompt" in data:
+            inputs["prompt"] = data["prompt"]
+
+        return inputs
+
+
+@dataclasses.dataclass(frozen=True)
+class LiberoDepthOutputs(transforms.DataTransformFn):
+    """Transform outputs from the model for Libero with depth.
+    
+    Same as LiberoOutputs - depth is input only, not output.
+    """
+
+    def __call__(self, data: dict) -> dict:
+        # Only return the first 7 actions (Libero action dimension)
+        return {"actions": np.asarray(data["actions"][:, :7])}
+
+
+@dataclasses.dataclass(frozen=True)
+class NormalizeDepth(transforms.DataTransformFn):
+    """Normalize depth values to a specific range.
+    
+    This transform can be used as a model transform to ensure
+    consistent depth normalization.
+    """
+    
+    min_depth: float = 0.0
+    max_depth: float = 10.0  # Typical max depth in Libero
+    
+    def __call__(self, data: dict) -> dict:
+        if "depth" in data and data["depth"] is not None:
+            depth = data["depth"]
+            depth = np.clip(depth, self.min_depth, self.max_depth)
+            depth = (depth - self.min_depth) / (self.max_depth - self.min_depth)
+            data = {**data, "depth": depth}
+        return data

@@ -146,6 +146,37 @@ def get_model_parameters(model):
     )
 
 
+def log_trainable_params(model, checkpoint_dir, is_main: bool) -> None:
+    """Log trainable parameter stats and write a full list to disk."""
+    if not is_main:
+        return
+    model_to_log = (
+        model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model
+    )
+    named_params = list(model_to_log.named_parameters())
+    total_params = sum(param.numel() for _, param in named_params)
+    trainable_params = sum(param.numel() for _, param in named_params if param.requires_grad)
+    frozen_params = total_params - trainable_params
+    pct = (trainable_params / total_params * 100.0) if total_params else 0.0
+
+    logging.info(
+        "Parameter counts: total=%d (%.2fM), trainable=%d (%.2fM, %.2f%%), frozen=%d",
+        total_params,
+        total_params / 1e6,
+        trainable_params,
+        trainable_params / 1e6,
+        pct,
+        frozen_params,
+    )
+
+    params_path = checkpoint_dir / "trainable_params.txt"
+    with params_path.open("w", encoding="utf-8") as f:
+        for name, param in named_params:
+            status = "trainable" if param.requires_grad else "frozen"
+            f.write(f"{name}\t{tuple(param.shape)}\t{param.numel()}\t{status}\n")
+    logging.info("Wrote parameter list to %s", params_path)
+
+
 def save_checkpoint(model, optimizer, global_step, config, is_main, data_config):
     """Save a checkpoint with model state, optimizer state, and metadata."""
     if not is_main:
@@ -443,10 +474,22 @@ def train_loop(config: _config.TrainConfig):
         logging.info(f"Loading weights from: {config.pytorch_weight_path}")
 
         model_path = os.path.join(config.pytorch_weight_path, "model.safetensors")
-        safetensors.torch.load_model(
-            (model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model), model_path
-        )
+        model_to_load = model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model
+        state_dict = safetensors.torch.load_file(model_path)
+        missing_keys, unexpected_keys = model_to_load.load_state_dict(state_dict, strict=False)
+        if missing_keys:
+            logging.warning(
+                "Missing keys when loading PyTorch weights (showing up to 10): %s",
+                missing_keys[:10],
+            )
+        if unexpected_keys:
+            logging.warning(
+                "Unexpected keys when loading PyTorch weights (showing up to 10): %s",
+                unexpected_keys[:10],
+            )
         logging.info(f"Loaded PyTorch weights from {config.pytorch_weight_path}")
+
+    log_trainable_params(model, config.checkpoint_dir, is_main)
 
     # Optimizer + learning rate schedule from config
     warmup_steps = config.lr_schedule.warmup_steps
