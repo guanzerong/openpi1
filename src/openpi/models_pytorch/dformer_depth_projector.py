@@ -15,16 +15,9 @@ def _import_dformer_infer():
         return importlib.import_module("DFormer.utils.infer")
     except Exception:
         repo_root = Path(__file__).resolve().parents[3]
-        candidates = []
-        env_root = os.environ.get("DFORMER_ROOT")
-        if env_root:
-            candidates.append(Path(env_root))
-        candidates.append(repo_root.parent / "DFormer")
-        candidates.append(Path("/data_all/gzr1/DFormer"))
-        for candidate in candidates:
-            if candidate and candidate.exists():
-                sys.path.insert(0, str(candidate.parent))
-                break
+        candidate = repo_root.parent / "DFormer"
+        if candidate.exists():
+            sys.path.insert(0, str(candidate.parent))
         return importlib.import_module("DFormer.utils.infer")
 
 

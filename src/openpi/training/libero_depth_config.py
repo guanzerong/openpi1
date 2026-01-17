@@ -103,8 +103,8 @@ def get_pi05_libero_depth_config() -> TrainConfig:
             discrete_state_input=False,
             use_depth=True,
             depth_encoder="dformer",
-            dformer_config="local_configs.NYUDepthv2.DFormerv2_S",
-            dformer_checkpoint="/data_all/gzr1/DFormer/checkpoints/trained/DFormerv2_Small_NYU.pth",
+            dformer_config="local_configs.NYUDepthv2.DFormerv2_B",
+            dformer_checkpoint="/data_all/gzr1/openpi_onlyrgbd/checkpoints/RGBDProjector/DFormerv2_Base_NYU.pth",
             dformer_train_backbone=True,
         ),
         data=LeRobotLiberoDepthDataConfig(
@@ -140,8 +140,8 @@ def get_pi05_libero_depth_lora_config() -> TrainConfig:
             use_depth=True,
             paligemma_variant="gemma_2b_lora",  # Use LoRA for main model
             depth_encoder="dformer",
-            dformer_config="local_configs.NYUDepthv2.DFormerv2_S",
-            dformer_checkpoint="/data_all/gzr1/DFormer/checkpoints/trained/DFormerv2_Small_NYU.pth",
+            dformer_config="local_configs.NYUDepthv2.DFormerv2_B",
+            dformer_checkpoint="/data_all/gzr1/openpi_onlyrgbd/checkpoints/RGBDProjector/DFormerv2_Base_NYU.pth",
             dformer_train_backbone=False,
         ),
         data=LeRobotLiberoDepthDataConfig(

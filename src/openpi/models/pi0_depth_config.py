@@ -45,8 +45,8 @@ class Pi0DepthConfig(pi0_config.Pi0Config):
     # Depth feature extractor type ("pointnet" or "dformer")
     depth_encoder: str = "pointnet"
     # DFormer configuration (PyTorch only)
-    dformer_config: str = "local_configs.NYUDepthv2.DFormerv2_S"
-    dformer_checkpoint: str | None = "/data_all/gzr1/DFormer/checkpoints/trained/DFormerv2_Small_NYU.pth"
+    dformer_config: str = "local_configs.NYUDepthv2.DFormerv2_B"
+    dformer_checkpoint: str | None = "/data_all/gzr1/openpi_onlyrgbd/checkpoints/RGBDProjector/DFormerv2_Base_NYU.pth"
     dformer_train_backbone: bool = False
     dformer_projector_hidden_dim: int = 0
     dformer_force_val_size: tuple[int, int] | None = None
