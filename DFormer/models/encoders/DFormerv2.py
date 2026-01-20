@@ -227,6 +227,9 @@ class Decomposed_GSA(nn.Module):
         self.lepe = DWConv2d(embed_dim, 5, 1, 2)
 
         self.out_proj = nn.Linear(embed_dim * self.factor, embed_dim, bias=True)
+        self.save_attn = False
+        self.saved_attn = None
+        self.attn_mode = "full"
         self.reset_parameters()
 
     def forward(self, x: torch.Tensor, rel_pos, split_or_not=False):
@@ -250,7 +253,11 @@ class Decomposed_GSA(nn.Module):
         v = v.reshape(bsz, h, w, self.num_heads, -1).permute(0, 1, 3, 2, 4)
 
         qk_mat_w = qr_w @ kr_w.transpose(-1, -2)
-        qk_mat_w = qk_mat_w + mask_w.transpose(1, 2)
+        mask_w_t = mask_w.transpose(1, 2)
+        if self.attn_mode == "full":
+            qk_mat_w = qk_mat_w + mask_w_t
+        elif self.attn_mode == "geo_only":
+            qk_mat_w = qk_mat_w * 0 + mask_w_t
         qk_mat_w = torch.softmax(qk_mat_w, -1)
         v = torch.matmul(qk_mat_w, v)
 
@@ -259,9 +266,15 @@ class Decomposed_GSA(nn.Module):
         v = v.permute(0, 3, 2, 1, 4)
 
         qk_mat_h = qr_h @ kr_h.transpose(-1, -2)
-        qk_mat_h = qk_mat_h + mask_h.transpose(1, 2)
+        mask_h_t = mask_h.transpose(1, 2)
+        if self.attn_mode == "full":
+            qk_mat_h = qk_mat_h + mask_h_t
+        elif self.attn_mode == "geo_only":
+            qk_mat_h = qk_mat_h * 0 + mask_h_t
         qk_mat_h = torch.softmax(qk_mat_h, -1)
         output = torch.matmul(qk_mat_h, v)
+        if self.save_attn:
+            self.saved_attn = {"w": qk_mat_w.detach(), "h": qk_mat_h.detach()}
 
         output = output.permute(0, 3, 1, 2, 4).flatten(-2, -1)
         output = output + lepe
@@ -290,6 +303,9 @@ class Full_GSA(nn.Module):
         self.v_proj = nn.Linear(embed_dim, embed_dim * self.factor, bias=True)
         self.lepe = DWConv2d(embed_dim, 5, 1, 2)
         self.out_proj = nn.Linear(embed_dim * self.factor, embed_dim, bias=True)
+        self.save_attn = False
+        self.saved_attn = None
+        self.attn_mode = "full"
         self.reset_parameters()
 
     def forward(self, x: torch.Tensor, rel_pos, split_or_not=False):
@@ -316,8 +332,13 @@ class Full_GSA(nn.Module):
         vr = v.reshape(bsz, h, w, self.num_heads, -1).permute(0, 3, 1, 2, 4)
         vr = vr.flatten(2, 3)
         qk_mat = qr @ kr.transpose(-1, -2)
-        qk_mat = qk_mat + mask
+        if self.attn_mode == "full":
+            qk_mat = qk_mat + mask
+        elif self.attn_mode == "geo_only":
+            qk_mat = qk_mat * 0 + mask
         qk_mat = torch.softmax(qk_mat, -1)
+        if self.save_attn:
+            self.saved_attn = qk_mat.detach()
         output = torch.matmul(qk_mat, vr)
         output = output.transpose(1, 2).reshape(bsz, h, w, -1)
         output = output + lepe
