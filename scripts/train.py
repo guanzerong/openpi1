@@ -1,7 +1,11 @@
 import dataclasses
 import functools
 import logging
+import os
 import platform
+import pathlib
+import shutil
+import tempfile
 from typing import Any
 
 import etils.epath as epath
@@ -26,6 +30,30 @@ import openpi.training.optimizer as _optimizer
 import openpi.training.sharding as sharding
 import openpi.training.utils as training_utils
 import openpi.training.weight_loaders as _weight_loaders
+
+
+def configure_tmpdir() -> None:
+    """Route compiler temp files away from a nearly-full /tmp when needed."""
+    current_tmpdir = os.environ.get("TMPDIR")
+    if current_tmpdir:
+        pathlib.Path(current_tmpdir).mkdir(parents=True, exist_ok=True)
+        return
+
+    default_tmpdir = pathlib.Path(tempfile.gettempdir())
+    project_tmpdir = pathlib.Path.cwd() / "tmp" / "jax_tmp"
+    project_tmpdir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        default_free = shutil.disk_usage(default_tmpdir).free
+    except FileNotFoundError:
+        default_free = 0
+
+    # Prefer the project-local temp dir whenever /tmp is tight on free space.
+    if default_free < 50 * 1024**3:
+        os.environ["TMPDIR"] = str(project_tmpdir)
+        os.environ["TEMP"] = str(project_tmpdir)
+        os.environ["TMP"] = str(project_tmpdir)
+        logging.info("Using project-local TMPDIR: %s", project_tmpdir)
 
 
 def init_logging():
@@ -193,6 +221,7 @@ def train_step(
 
 def main(config: _config.TrainConfig):
     init_logging()
+    configure_tmpdir()
     logging.info(f"Running on: {platform.node()}")
 
     if config.batch_size % jax.device_count() != 0:
